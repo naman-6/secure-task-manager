@@ -1,0 +1,114 @@
+# postgres-statefulset.yaml
+# Single-replica PostgreSQL StatefulSet for the Database tier.
+# Uses a PersistentVolumeClaim template so data survives pod rescheduling
+# across the two ESXi worker nodes. Assumes a default StorageClass exists
+# (e.g. local-path-provisioner, Longhorn, or an NFS-backed StorageClass)
+# on the bare-metal cluster. Adjust storageClassName below if named
+# differently in your environment.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: taskmanager
+  labels:
+    app: postgres
+    tier: database
+    app.kubernetes.io/part-of: secure-task-manager
+spec:
+  serviceName: postgres-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+        tier: database
+        app.kubernetes.io/part-of: secure-task-manager
+    spec:
+      securityContext:
+        fsGroup: 999
+        runAsNonRoot: true
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+              name: postgres
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            runAsGroup: 999
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false # Postgres needs to write to PGDATA
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: taskmanager-db-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: taskmanager-db-secret
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: taskmanager-db-secret
+                  key: POSTGRES_DB
+            # PGDATA is placed in a subdirectory of the mounted volume so
+            # the "lost+found" directory created by some filesystems on the
+            # volume root does not cause Postgres's "empty directory" check
+            # to fail.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-storage
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # storageClassName: "local-path"  # Uncomment/adjust for your cluster
+        resources:
+          requests:
+            storage: 5Gi

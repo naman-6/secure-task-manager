@@ -1,0 +1,22 @@
+# postgres-service.yaml
+# ClusterIP (headless) Service providing stable DNS for the Postgres
+# StatefulSet. Not exposed outside the cluster - only the backend tier
+# should ever reach this (enforced by network-policy.yaml).
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  namespace: taskmanager
+  labels:
+    app: postgres
+    tier: database
+    app.kubernetes.io/part-of: secure-task-manager
+spec:
+  clusterIP: None # Headless service required for StatefulSet stable network IDs
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+      protocol: TCP

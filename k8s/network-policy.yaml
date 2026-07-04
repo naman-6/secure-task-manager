@@ -1,0 +1,152 @@
+# network-policy.yaml
+# Enforces least-privilege network access between tiers:
+#   - Default deny-all ingress/egress inside the "taskmanager" namespace.
+#   - Postgres (database tier) accepts ingress ONLY from the backend tier.
+#   - Backend (API tier) accepts ingress ONLY from the frontend tier
+#     (plus allowed egress to Postgres and DNS).
+#   - Frontend (web tier) accepts ingress from anywhere (NodePort/public)
+#     but can only egress to the backend tier (plus DNS).
+#
+# NOTE: NetworkPolicy enforcement requires a CNI plugin that implements it
+# (e.g. Calico, Cilium, Weave Net). Flannel alone does NOT enforce
+# NetworkPolicy - see README for CNI guidance on bare-metal.
+
+---
+# 1. Default deny all ingress and egress for every pod in the namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: taskmanager
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# 2. Allow DNS resolution (kube-dns/CoreDNS) for all pods - required for any
+#    Service-name based communication (Postgres, backend-service DNS, etc).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: taskmanager
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+---
+# 3. Postgres: only accept ingress from backend pods, on port 5432.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-to-postgres
+  namespace: taskmanager
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: backend
+      ports:
+        - protocol: TCP
+          port: 5432
+
+---
+# 4. Backend: only accept ingress from frontend pods, on port 8000.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-to-backend
+  namespace: taskmanager
+spec:
+  podSelector:
+    matchLabels:
+      app: backend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+      ports:
+        - protocol: TCP
+          port: 8000
+
+---
+# 5. Backend: allow egress ONLY to Postgres (plus DNS, granted above).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-egress-to-postgres
+  namespace: taskmanager
+spec:
+  podSelector:
+    matchLabels:
+      app: backend
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+
+---
+# 6. Frontend: allow ingress from anywhere (the NodePort is reached from
+#    outside the cluster, so source pods/IPs cannot be constrained here;
+#    exposure is instead controlled by the Service type/port itself).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-frontend
+  namespace: taskmanager
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+    - Ingress
+  ingress:
+    - {}
+
+---
+# 7. Frontend: allow egress ONLY to the backend tier (plus DNS above).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-egress-to-backend
+  namespace: taskmanager
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: backend
+      ports:
+        - protocol: TCP
+          port: 8000

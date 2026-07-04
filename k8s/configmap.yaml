@@ -1,0 +1,25 @@
+# configmap.yaml
+# Namespace declaration + non-sensitive configuration shared across tiers.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: taskmanager
+  labels:
+    name: taskmanager
+    environment: on-prem-production
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: taskmanager-config
+  namespace: taskmanager
+  labels:
+    app.kubernetes.io/part-of: secure-task-manager
+data:
+  POSTGRES_HOST: "postgres-service"
+  POSTGRES_PORT: "5432"
+  LOG_LEVEL: "INFO"
+  # Frontend is same-origin via Nginx proxy, so only local dev ports are
+  # needed here; adjust if you expose the API directly for other consumers.
+  CORS_ALLOWED_ORIGINS: "http://localhost:8081,http://localhost:5173"
+  APP_VERSION: "1.0.0"

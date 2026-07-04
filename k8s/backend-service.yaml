@@ -1,0 +1,22 @@
+# backend-service.yaml
+# Internal-only ClusterIP Service for the backend API. The frontend Nginx
+# container proxies to this Service by DNS name ("backend-service"); it is
+# never exposed directly outside the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  namespace: taskmanager
+  labels:
+    app: backend
+    tier: api
+    app.kubernetes.io/part-of: secure-task-manager
+spec:
+  type: ClusterIP
+  selector:
+    app: backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      protocol: TCP
