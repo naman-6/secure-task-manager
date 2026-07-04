@@ -72,7 +72,7 @@ pipeline {
                         echo "==> Running Semgrep against the entire repository"
                         sh '''
                             set -e
-                            python3 -m pip install --user --quiet semgrep || true
+                            python3 -m pip install --user --quiet --break-system-packages semgrep || true
                             python3 -m semgrep scan --config auto --json --output semgrep-report.json . || true
                             python3 -m semgrep scan --config auto . || true
                             echo "Semgrep scan complete. Report: semgrep-report.json"
@@ -96,7 +96,7 @@ pipeline {
                         dir('backend') {
                             sh '''
                                 set -e
-                                python3 -m pip install --user --quiet pip-audit || true
+                                python3 -m pip install --user --quiet --break-system-packages pip-audit || true
                                 python3 -m pip_audit -r requirements.txt -f json -o ../pip-audit-report.json || true
                                 python3 -m pip_audit -r requirements.txt || true
                                 echo "pip-audit scan complete."
@@ -193,9 +193,9 @@ pipeline {
                 echo "==> Scanning deployment manifests with Checkov"
                 sh '''
                     set -e
-                    python3 -m pip install --user --quiet checkov || true
-                    python3 -m checkov -d k8s/ --framework kubernetes --output json --output-file-path checkov-report.json || true
-                    python3 -m checkov -d k8s/ --framework kubernetes --compact || true
+                    python3 -m pip install --user --quiet --break-system-packages checkov || true
+                    python3 -m checkov -d k8s/ --framework kubernetes --break-system-packages --output json --output-file-path checkov-report.json || true
+                    python3 -m checkov -d k8s/ --framework kubernetes --break-system-packages --compact || true
                     echo "Checkov static analysis complete."
                 '''
             }
@@ -230,7 +230,7 @@ pipeline {
                         kubectl apply -f k8s/postgres-service.yaml
                         kubectl apply -f k8s/postgres-statefulset.yaml
 
-                        // Ensures backend wait_for_db helper syncs properly
+                        # Ensures backend wait_for_db helper syncs properly
                         echo "--> Deploying application tiers"
                         kubectl apply -f k8s/backend-service.yaml
                         kubectl apply -f k8s/backend-deployment.yaml
