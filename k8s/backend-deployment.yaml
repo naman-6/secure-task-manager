@@ -38,7 +38,7 @@ spec:
           # Replace <MOTHERSHIP_IP> with the actual mothership VM address
           # reachable from the ESXi worker nodes, or use the DNS name
           # configured for the mothership registry.
-          image: <MOTHERSHIP_IP>:5000/taskmanager-backend:latest
+          image: :naman96/secure-task-manager-backend:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8000

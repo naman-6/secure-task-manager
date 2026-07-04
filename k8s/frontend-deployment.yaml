@@ -30,7 +30,7 @@ spec:
       containers:
         - name: frontend
           # Replace <MOTHERSHIP_IP> with the actual mothership VM address.
-          image: <MOTHERSHIP_IP>:5000/taskmanager-frontend:latest
+          image: naman96/secure-task-manager-frontend:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
