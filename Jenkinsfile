@@ -1,27 +1,7 @@
 // Jenkinsfile
 //
-// Secure Task & Asset Manager - CI/CD Pipeline
-//
-// Designed to run entirely on the "devsecops-mothership" VM using a Jenkins
-// agent with Docker, Python 3, Node.js, and kubectl installed locally.
-// This VM also hosts the local, insecure Docker registry at localhost:5000
-// which the built images are pushed to before being deployed to the
-// external, on-prem ESXi Kubernetes cluster (1 master, 2 workers).
-//
-// PREREQUISITES ON THE MOTHERSHIP VM / JENKINS AGENT:
-//   - Docker Engine with a registry container running:
-//       docker run -d -p 5000:5000 --restart=always --name registry registry:2
-//   - Python 3.11+, pip, bandit, semgrep, pip-audit installed on PATH
-//       (or available via the "python3 -m pip install --user ..." fallback
-//       used below).
-//   - Node.js 20+ and npm on PATH.
-//   - trivy CLI installed (https://aquasecurity.github.io/trivy/).
-//   - checkov CLI installed (pip install checkov).
-//   - kubectl installed and configured with a kubeconfig (via Jenkins
-//     credential "kubeconfig-esxi-cluster") that can reach the external
-//     ESXi master node's API server.
-//   - Jenkins credential "kubeconfig-esxi-cluster" (Secret file) containing
-//     the kubeconfig for the remote cluster.
+// Secure Task & Asset Manager - Cloud-Hybrid DevSecOps Pipeline
+// Designed for: GitHub -> Jenkins (Mothership) -> Docker Hub -> ESXi K8s Cluster
 
 pipeline {
     agent any
@@ -34,25 +14,26 @@ pipeline {
     }
 
     environment {
-        REGISTRY            = "localhost:5000"
-        IMAGE_TAG           = "${env.BUILD_NUMBER}-${env.GIT_COMMIT?.take(7) ?: 'nogit'}"
-        BACKEND_IMAGE       = "${REGISTRY}/taskmanager-backend"
-        FRONTEND_IMAGE      = "${REGISTRY}/taskmanager-frontend"
-        K8S_NAMESPACE       = "taskmanager"
-        KUBECONFIG_CRED_ID  = "kubeconfig-esxi-cluster"
-        // Address of the mothership registry AS SEEN BY the ESXi worker
-        // nodes (not "localhost", since the workers are separate hosts).
-        // Override this at the Jenkins job level or via a parameter.
-        MOTHERSHIP_REGISTRY_EXTERNAL = "${params.MOTHERSHIP_IP ?: '192.168.1.10'}:5000"
+        // Points to the Jenkins Credential ID created in Step 1
+        DOCKER_HUB_CREDS   = "docker-hub-credentials"
+        DOCKER_USER        = "naman96"
+        
+        // Tagging convention using Jenkins build numbers and truncated git hashes
+        IMAGE_TAG          = "${env.BUILD_NUMBER}-${env.GIT_COMMIT?.take(7) ?: 'nogit'}"
+        
+        // Official Docker Hub image paths
+        BACKEND_IMAGE      = "${DOCKER_USER}/secure-task-manager-backend"
+        FRONTEND_IMAGE     = "${DOCKER_USER}/secure-task-manager-frontend"
+        
+        K8S_NAMESPACE      = "taskmanager"
+        KUBECONFIG_CRED_ID = "kubeconfig-esxi-cluster"
     }
 
     parameters {
-        string(name: 'MOTHERSHIP_IP', defaultValue: '192.168.1.10',
-               description: 'IP/hostname of this mothership VM as reachable from the ESXi worker nodes.')
         booleanParam(name: 'FAIL_ON_CRITICAL_VULN', defaultValue: true,
-               description: 'Abort the pipeline if Trivy finds CRITICAL severity vulnerabilities.')
+                     description: 'Abort the pipeline if Trivy finds CRITICAL severity vulnerabilities.')
         booleanParam(name: 'SKIP_DEPLOY', defaultValue: false,
-               description: 'Run all scan/build stages but skip the remote kubectl deployment.')
+                     description: 'Run all scan/build stages but skip the remote kubectl deployment.')
     }
 
     stages {
@@ -60,7 +41,7 @@ pipeline {
         // ---------------------------------------------------------------
         stage('1. Checkout') {
             steps {
-                echo "==> Checking out source code"
+                echo "==> Checking out source code from GitHub"
                 checkout scm
                 sh 'git log -1 --pretty=format:"Commit: %H | Author: %an | Message: %s"'
             }
@@ -151,32 +132,32 @@ pipeline {
         }
 
         // ---------------------------------------------------------------
-        stage('4. Container Build & Push to Local Registry') {
+        stage('4. Container Build & Push to Docker Hub') {
             steps {
-                echo "==> Building backend image: ${BACKEND_IMAGE}:${IMAGE_TAG}"
-                sh """
-                    docker build -t ${BACKEND_IMAGE}:${IMAGE_TAG} -t ${BACKEND_IMAGE}:latest ./backend
-                """
+                echo "==> Building backend production container"
+                sh "docker build -t ${BACKEND_IMAGE}:${IMAGE_TAG} -t ${BACKEND_IMAGE}:latest ./backend"
 
-                echo "==> Building frontend image: ${FRONTEND_IMAGE}:${IMAGE_TAG}"
-                sh """
-                    docker build -t ${FRONTEND_IMAGE}:${IMAGE_TAG} -t ${FRONTEND_IMAGE}:latest ./frontend
-                """
+                echo "==> Building frontend production container"
+                sh "docker build -t ${FRONTEND_IMAGE}:${IMAGE_TAG} -t ${FRONTEND_IMAGE}:latest ./frontend"
 
-                echo "==> Pushing images to mothership local registry (${REGISTRY})"
-                sh """
-                    docker push ${BACKEND_IMAGE}:${IMAGE_TAG}
-                    docker push ${BACKEND_IMAGE}:latest
-                    docker push ${FRONTEND_IMAGE}:${IMAGE_TAG}
-                    docker push ${FRONTEND_IMAGE}:latest
-                """
+                echo "==> Securely authenticating and pushing to Docker Hub"
+                withCredentials([usernamePassword(credentialsId: "${DOCKER_HUB_CREDS}", usernameVariable: 'DB_USER', passwordVariable: 'DB_PASS')]) {
+                    sh """
+                        echo "\$DB_PASS" | docker login -u "\$DB_USER" --password-stdin
+                        docker push ${BACKEND_IMAGE}:${IMAGE_TAG}
+                        docker push ${BACKEND_IMAGE}:latest
+                        docker push ${FRONTEND_IMAGE}:${IMAGE_TAG}
+                        docker push ${FRONTEND_IMAGE}:latest
+                        docker logout
+                    """
+                }
             }
         }
 
         // ---------------------------------------------------------------
         stage('5. Container Scanning (Trivy)') {
             steps {
-                echo "==> Scanning built images for OS/library vulnerabilities with Trivy"
+                echo "==> Scanning built Docker Hub images for vulnerabilities"
                 script {
                     def trivyExitCode = 0
                     sh """
@@ -194,7 +175,7 @@ pipeline {
                             returnStatus: true
                         )
                         if (trivyExitCode != 0) {
-                            error("Trivy detected CRITICAL vulnerabilities. Failing pipeline (FAIL_ON_CRITICAL_VULN=true).")
+                            error("Trivy detected CRITICAL image vulnerabilities. Breaking build cascade.")
                         }
                     }
                 }
@@ -209,13 +190,13 @@ pipeline {
         // ---------------------------------------------------------------
         stage('6. Kubernetes Manifest Scanning (Checkov)') {
             steps {
-                echo "==> Scanning k8s/ manifests with Checkov"
+                echo "==> Scanning deployment manifests with Checkov"
                 sh '''
                     set -e
                     python3 -m pip install --user --quiet checkov || true
                     python3 -m checkov -d k8s/ --framework kubernetes --output json --output-file-path checkov-report.json || true
                     python3 -m checkov -d k8s/ --framework kubernetes --compact || true
-                    echo "Checkov scan complete. Report: checkov-report.json"
+                    echo "Checkov static analysis complete."
                 '''
             }
             post {
@@ -231,45 +212,40 @@ pipeline {
                 expression { return !params.SKIP_DEPLOY }
             }
             steps {
-                echo "==> Deploying to the on-prem ESXi Kubernetes cluster (external master node)"
+                echo "==> Authenticating to external ESXi K8s Master via Kubeconfig File"
                 withCredentials([file(credentialsId: "${KUBECONFIG_CRED_ID}", variable: 'KUBECONFIG_FILE')]) {
                     sh """
                         export KUBECONFIG=\${KUBECONFIG_FILE}
 
-                        echo "--> Verifying connectivity to the remote cluster"
+                        echo "--> Verifying cluster routing integrity"
                         kubectl cluster-info
                         kubectl get nodes -o wide
 
-                        echo "--> Applying namespace, config, and secrets first"
+                        echo "--> Orchestrating structural namespaces and core configurations"
                         kubectl apply -f k8s/configmap.yaml
                         kubectl apply -f k8s/secrets.yaml
+                        kubectl apply -f k8s/network-policy.yaml
 
-                        echo "--> Applying database tier"
+                        echo "--> Deploying high-availability storage and database tier"
                         kubectl apply -f k8s/postgres-service.yaml
                         kubectl apply -f k8s/postgres-statefulset.yaml
 
-                        echo "--> Applying network policies"
-                        kubectl apply -f k8s/network-policy.yaml
-
-                        echo "--> Applying backend tier"
+                        // Ensures backend wait_for_db helper syncs properly
+                        echo "--> Deploying application tiers"
                         kubectl apply -f k8s/backend-service.yaml
                         kubectl apply -f k8s/backend-deployment.yaml
-
-                        echo "--> Applying frontend tier"
                         kubectl apply -f k8s/frontend-service.yaml
                         kubectl apply -f k8s/frontend-deployment.yaml
 
-                        echo "--> Setting freshly built image tags on the Deployments"
-                        kubectl -n ${K8S_NAMESPACE} set image deployment/backend \
-                            backend=${MOTHERSHIP_REGISTRY_EXTERNAL}/taskmanager-backend:${IMAGE_TAG}
-                        kubectl -n ${K8S_NAMESPACE} set image deployment/frontend \
-                            frontend=${MOTHERSHIP_REGISTRY_EXTERNAL}/taskmanager-frontend:${IMAGE_TAG}
+                        echo "--> Pushing fresh application builds straight from Docker Hub"
+                        kubectl -n ${K8S_NAMESPACE} set image deployment/backend backend=${BACKEND_IMAGE}:${IMAGE_TAG}
+                        kubectl -n ${K8S_NAMESPACE} set image deployment/frontend frontend=${FRONTEND_IMAGE}:${IMAGE_TAG}
 
-                        echo "--> Waiting for rollouts to complete"
+                        echo "--> Confirming rollout transition status strings"
                         kubectl -n ${K8S_NAMESPACE} rollout status deployment/backend --timeout=180s
                         kubectl -n ${K8S_NAMESPACE} rollout status deployment/frontend --timeout=180s
 
-                        echo "--> Post-deploy status"
+                        echo "--> Post-deployment environment mapping"
                         kubectl -n ${K8S_NAMESPACE} get pods -o wide
                         kubectl -n ${K8S_NAMESPACE} get svc
                     """
@@ -280,10 +256,10 @@ pipeline {
 
     post {
         success {
-            echo "Pipeline completed successfully. Build tag: ${IMAGE_TAG}"
+            echo "DevSecOps core lifecycle completed successfully! Build Tag: ${IMAGE_TAG}"
         }
         failure {
-            echo "Pipeline FAILED. Check the archived SAST/SCA/Trivy/Checkov reports for details."
+            echo "Pipeline halted due to scanning failure. Investigate archived JSON reports."
         }
         always {
             sh 'docker image prune -f || true'
