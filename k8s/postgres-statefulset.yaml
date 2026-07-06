@@ -1,10 +1,7 @@
 # postgres-statefulset.yaml
 # Single-replica PostgreSQL StatefulSet for the Database tier.
-# Uses a PersistentVolumeClaim template so data survives pod rescheduling
-# across the two ESXi worker nodes. Assumes a default StorageClass exists
-# (e.g. local-path-provisioner, Longhorn, or an NFS-backed StorageClass)
-# on the bare-metal cluster. Adjust storageClassName below if named
-# differently in your environment.
+# Adjusted for bare-metal ESXi deployment using emptyDir to bypass
+# the need for a dynamic PersistentVolume provisioner.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -103,12 +100,5 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
-  volumeClaimTemplates:
-    - metadata:
-        name: postgres-storage
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        # storageClassName: "local-path"  # Uncomment/adjust for your cluster
-        resources:
-          requests:
-            storage: 5Gi
+        - name: postgres-storage
+          emptyDir: {}
