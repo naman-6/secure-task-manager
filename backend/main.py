@@ -17,6 +17,7 @@ import sys
 import time
 import uuid
 from typing import List, Optional
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from fastapi import FastAPI, Depends, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -88,6 +89,8 @@ app = FastAPI(
     redoc_url="/redoc",
     openapi_url="/openapi.json",
 )
+
+Instrumentator().instrument(app).expose(app)
 
 # CORS: restrict to explicitly allowed origins (comma-separated env var).
 # Defaults to the in-cluster frontend NodePort access patterns for local dev.
